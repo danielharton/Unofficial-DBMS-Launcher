@@ -135,26 +135,53 @@ bool StartNamedService(const wchar_t* name) {
 }
 
 bool StopNamedService(const wchar_t* name) {
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) return false;
     SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (!svc) { CloseServiceHandle(scm); return false; }
 
     SERVICE_STATUS_PROCESS ssp = {};
-    DWORD bytes = 0;
+    DWORD bytesNeeded = 0;
 
+    // 1) See where we are right now
+    if (!QueryServiceStatusEx(
+        svc,
+        SC_STATUS_PROCESS_INFO,
+        (LPBYTE)&ssp,
+        sizeof(ssp),
+        &bytesNeeded))
+    {
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        return false;
+    }
+
+    // If already stopped, we’re done
+    if (ssp.dwCurrentState == SERVICE_STOPPED) {
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        return true;
+    }
+
+    // 2) Send STOP control (works even if we’re in START_PENDING)
     ControlService(svc, SERVICE_CONTROL_STOP, (LPSERVICE_STATUS)&ssp);
 
-    const DWORD timeout = 30000;  // 30s
-    DWORD elapsed = 0;
-    while (ssp.dwCurrentState != SERVICE_STOPPED && elapsed < timeout) {
-        Sleep(1000);
-        elapsed += 1000;
+    // 3) Poll every 200 ms up to 10 s
+    /*const DWORD kTimeoutMs = 10'000;
+    DWORD waited = 0;*/
+    /*while (ssp.dwCurrentState != SERVICE_STOPPED && waited < kTimeoutMs) {
+        Sleep(200);
+        waited += 200;
         if (!QueryServiceStatusEx(
-            svc, SC_STATUS_PROCESS_INFO,
-            (LPBYTE)&ssp, sizeof(ssp), &bytes))
+            svc,
+            SC_STATUS_PROCESS_INFO,
+            (LPBYTE)&ssp,
+            sizeof(ssp),
+            &bytesNeeded))
+        {
             break;
-    }
+        }
+    }*/
 
     bool stopped = (ssp.dwCurrentState == SERVICE_STOPPED);
     CloseServiceHandle(svc);
