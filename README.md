@@ -1,0 +1,2 @@
+This program starts the services for the Oracle Server 23ai (https://www.oracle.com/database/free/get-started/#windows)
+Then it sits in the system tray as an icon and waits for a right click action on its icon for managing DBMS tools like opening the client SQL Developer,opening the file path to the Oracle server files, or close the server related services (they might start again at system startup if they're not set to manual).
