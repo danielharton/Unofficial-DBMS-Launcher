@@ -1,32 +1,35 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <tchar.h>
 #include <vector>
 #include <string>
 #include <fstream>
-#include <atlbase.h>
-#include <combaseapi.h>
-#include <shlwapi.h>
+#include <winsvc.h>
+#pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
 
-// Tray and menu IDs
-#define WM_TRAYICON               (WM_USER + 1)
-#define ID_TRAY_OPEN_SQLDEV       1001
-#define ID_TRAY_OPEN_SERVER       1002
-#define ID_TRAY_STOP_SERVICES     1004
+// tray/menu IDs
+#define WM_TRAYICON             (WM_USER + 1)
+#define ID_TRAY_OPEN_SQLDEV     1001
+#define ID_TRAY_OPEN_SERVER     1002
+#define ID_TRAY_STOP_SERVICES   1004
 
 const wchar_t g_szClassName[] = L"ServiceTrayAppClass";
 const wchar_t g_szNoticeClass[] = L"ServiceTrayNoticeClass";
+
+// Oracle services we manage
 const wchar_t* SERVICE_NAMES[] = {
     L"OracleOraDB23Home1TNSListener",
     L"OracleServiceFREE",
     L"OracleVssWriterFREE"
 };
+
 std::wstring SERVER_PATH;
 
-// License text
+// — License‐notice machinery (unchanged) —
 const wchar_t* LICENSE_TEXT =
 L"Unofficial Oracle server management software. Not affiliated with Oracle Corporation.\r\n"
 L"https://github.com/danielharton/Unofficial-DBMS-Launcher\r\n"
@@ -35,18 +38,19 @@ L"Permission is hereby granted, free of charge, to any person obtaining a copy o
 L"The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\r\n\r\n"
 L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.";
 
-// Helpers to manage license acknowledgement
+
 std::wstring GetNoticePath() {
     wchar_t appdata[MAX_PATH];
-    SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, appdata);
-    std::wstring dir = std::wstring(appdata) + L"\\Unofficial Oracle Server Launcher";
-    CreateDirectory(dir.c_str(), NULL);
+    SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appdata);
+    std::wstring dir = appdata;
+    dir += L"\\Unofficial Oracle Server Launcher";
+    CreateDirectoryW(dir.c_str(), NULL);
     return dir + L"\\notice.cfg";
 }
 
 bool NoticeExists() {
-    DWORD attr = GetFileAttributes(GetNoticePath().c_str());
-    return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+    DWORD attr = GetFileAttributesW(GetNoticePath().c_str());
+    return (attr != INVALID_FILE_ATTRIBUTES) && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 void WriteNoticeAck() {
@@ -54,203 +58,252 @@ void WriteNoticeAck() {
     ofs << L"agreed";
 }
 
-// Show license window
 LRESULT CALLBACK NoticeWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hEdit, hAgree, hAgreeOnce, hDecline;
     switch (msg) {
     case WM_CREATE:
-        // Adjust edit control size
-        hEdit = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", LICENSE_TEXT,
+        hEdit = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", LICENSE_TEXT,
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-            10, 10, 780, 300, hWnd, NULL, NULL, NULL);
+            10, 10, 780, 300, hWnd, nullptr, nullptr, nullptr);
+
         {
-            // Calculate button positions to center them in 820px width
-            int totalButtonsWidth = 120 + 20 + 200 + 20 + 120; // = 480
-            int startX = (820 - totalButtonsWidth) / 2; // = 170
-            int y = 320;
-            hAgree = CreateWindow(L"BUTTON", L"Agree", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                startX, y, 120, 30, hWnd, (HMENU)1, NULL, NULL);
-            hAgreeOnce = CreateWindow(L"BUTTON", L"Agree && Don't Show Again", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                startX + 120 + 20, y, 200, 30, hWnd, (HMENU)2, NULL, NULL);
-            hDecline = CreateWindow(L"BUTTON", L"Decline", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                startX + 120 + 20 + 200 + 20, y, 120, 30, hWnd, (HMENU)3, NULL, NULL);
+            int totalW = 120 + 20 + 200 + 20 + 120;
+            int startX = (820 - totalW) / 2, y = 320;
+            hAgree = CreateWindowW(L"BUTTON", L"Agree",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                startX, y, 120, 30, hWnd, (HMENU)1, nullptr, nullptr);
+            hAgreeOnce = CreateWindowW(L"BUTTON", L"Agree && Don't Show Again",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                startX + 140, y, 200, 30, hWnd, (HMENU)2, nullptr, nullptr);
+            hDecline = CreateWindowW(L"BUTTON", L"Decline",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                startX + 360, y, 120, 30, hWnd, (HMENU)3, nullptr, nullptr);
         }
         break;
+
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case 1:
-            DestroyWindow(hWnd);
-            break;
-        case 2:
-            WriteNoticeAck();
-            DestroyWindow(hWnd);
-            break;
-        case 3:
-            ExitProcess(0);
-            break;
+        case 1: DestroyWindow(hWnd);          break;
+        case 2: WriteNoticeAck(); DestroyWindow(hWnd); break;
+        case 3: ExitProcess(0);               break;
         }
         break;
+
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
+
     default:
-        return DefWindowProc(hWnd, msg, wParam, lParam);
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
     return 0;
 }
 
 void ShowNotice(HINSTANCE hInst) {
-    WNDCLASSEX wc = {};
-    wc.cbSize = sizeof(wc);
+    WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = NoticeWndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = g_szNoticeClass;
-    RegisterClassEx(&wc);
+    RegisterClassExW(&wc);
 
-    // Respect 820x400 resolution
-    HWND hWnd = CreateWindowEx(0, g_szNoticeClass, L"License Agreement",
+    HWND hWnd = CreateWindowExW(
+        0, g_szNoticeClass, L"License Agreement",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         CW_USEDEFAULT, CW_USEDEFAULT, 820, 400,
         NULL, NULL, hInst, NULL);
     ShowWindow(hWnd, SW_SHOW);
 
     MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
+    while (GetMessageW(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        DispatchMessageW(&msg);
     }
 }
 
-
-// Service control helpers
-bool StartNamedService(const wchar_t* serviceName) {
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+// — Service helpers — 
+bool StartNamedService(const wchar_t* name) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (!scm) return false;
-    SC_HANDLE svc = OpenService(scm, serviceName, SERVICE_START | SERVICE_QUERY_STATUS);
+    SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_START | SERVICE_QUERY_STATUS);
     if (!svc) { CloseServiceHandle(scm); return false; }
-    bool ok = StartService(svc, 0, NULL) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING;
+    bool ok = StartServiceW(svc, 0, nullptr)
+        || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING;
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return ok;
 }
 
-bool StopNamedService(const wchar_t* serviceName) {
-    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+bool StopNamedService(const wchar_t* name) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (!scm) return false;
-    SC_HANDLE svc = OpenService(scm, serviceName, SERVICE_STOP | SERVICE_QUERY_STATUS);
+    SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (!svc) { CloseServiceHandle(scm); return false; }
-    SERVICE_STATUS ss;
-    bool ok = ControlService(svc, SERVICE_CONTROL_STOP, &ss) || GetLastError() == ERROR_SERVICE_NOT_ACTIVE;
+
+    SERVICE_STATUS_PROCESS ssp = {};
+    DWORD bytes = 0;
+
+    ControlService(svc, SERVICE_CONTROL_STOP, (LPSERVICE_STATUS)&ssp);
+
+    const DWORD timeout = 30000;  // 30s
+    DWORD elapsed = 0;
+    while (ssp.dwCurrentState != SERVICE_STOPPED && elapsed < timeout) {
+        Sleep(1000);
+        elapsed += 1000;
+        if (!QueryServiceStatusEx(
+            svc, SC_STATUS_PROCESS_INFO,
+            (LPBYTE)&ssp, sizeof(ssp), &bytes))
+            break;
+    }
+
+    bool stopped = (ssp.dwCurrentState == SERVICE_STOPPED);
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
-    return ok;
+    return stopped;
 }
 
-// Context menu
-void ShowContextMenu(HWND hWnd) {
-    POINT pt; GetCursorPos(&pt);
-    HMENU hMenu = CreatePopupMenu();
-    InsertMenu(hMenu, -1, MF_BYPOSITION, ID_TRAY_OPEN_SQLDEV, L"Open SQL Developer");
-    InsertMenu(hMenu, -1, MF_BYPOSITION, ID_TRAY_OPEN_SERVER, L"Open Server Path in File Explorer");
-    InsertMenu(hMenu, -1, MF_BYPOSITION, ID_TRAY_STOP_SERVICES, L"Stop Services");
-    SetForegroundWindow(hWnd);
-    TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, NULL);
-    DestroyMenu(hMenu);
-}
-
-// Tray icon management
+// — Tray & menu — 
 void AddTrayIcon(HWND hWnd) {
-    NOTIFYICONDATA nid = {};
-    nid.cbSize = sizeof(nid);
+    NOTIFYICONDATAW nid = { sizeof(nid) };
     nid.hWnd = hWnd;
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    nid.hIcon = LoadIconW(NULL, IDI_APPLICATION);
     wcscpy_s(nid.szTip, L"Unofficial Oracle Service Tray");
-    Shell_NotifyIcon(NIM_ADD, &nid);
+    Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
 void RemoveTrayIcon(HWND hWnd) {
-    NOTIFYICONDATA nid = {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = hWnd;
-    nid.uID = 1;
-    Shell_NotifyIcon(NIM_DELETE, &nid);
+    NOTIFYICONDATAW nid = { sizeof(nid) };
+    nid.hWnd = hWnd; nid.uID = 1;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-// Main window proc
+void ShowContextMenu(HWND hWnd) {
+    POINT pt; GetCursorPos(&pt);
+    HMENU hMenu = CreatePopupMenu();
+    InsertMenuW(hMenu, (UINT)-1, MF_BYPOSITION | MF_STRING,
+        ID_TRAY_OPEN_SQLDEV, L"Open SQL Developer");
+    InsertMenuW(hMenu, (UINT)-1, MF_BYPOSITION | MF_STRING,
+        ID_TRAY_OPEN_SERVER, L"Open Server Path...");
+    InsertMenuW(hMenu, (UINT)-1, MF_BYPOSITION | MF_STRING,
+        ID_TRAY_STOP_SERVICES, L"Stop Services");
+    SetForegroundWindow(hWnd);
+    TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+        pt.x, pt.y, 0, hWnd, NULL);
+    DestroyMenu(hMenu);
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static bool stopping = false;
     switch (msg) {
     case WM_TRAYICON:
-        if (lParam == WM_RBUTTONUP) ShowContextMenu(hWnd);
+        if (lParam == WM_RBUTTONUP && !stopping)
+            ShowContextMenu(hWnd);
         break;
+
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case ID_TRAY_OPEN_SQLDEV:
-            ShellExecute(NULL, L"open",
+            ShellExecuteW(NULL, L"open",
                 L"C:\\Program Files\\sqldeveloper\\sqldeveloper.exe",
                 NULL, NULL, SW_SHOWNORMAL);
             break;
+
         case ID_TRAY_OPEN_SERVER:
-            ShellExecute(NULL, L"open",
+            ShellExecuteW(NULL, L"open",
                 L"explorer.exe",
                 SERVER_PATH.c_str(),
                 NULL, SW_SHOWNORMAL);
             break;
+
         case ID_TRAY_STOP_SERVICES:
-            for (auto& name : SERVICE_NAMES) StopNamedService(name);
-            PostMessage(hWnd, WM_CLOSE, 0, 0);
+            stopping = true;
+            // balloon tip
+            {
+                NOTIFYICONDATAW tip = { sizeof(tip) };
+                tip.hWnd = hWnd; tip.uID = 1;
+                tip.uFlags = NIF_INFO;
+                wcscpy_s(tip.szInfoTitle, L"Service Tray");
+                wcscpy_s(tip.szInfo, L"Stopping Oracle services...\nPlease wait.");
+                tip.dwInfoFlags = NIIF_INFO;
+                Shell_NotifyIconW(NIM_MODIFY, &tip);
+            }
+            // retry each service until stopped
+            for (auto& svc : SERVICE_NAMES) {
+                while (!StopNamedService(svc)) {
+                    Sleep(1000);
+                }
+            }
+            PostMessageW(hWnd, WM_CLOSE, 0, 0);
             break;
         }
         break;
+
     case WM_CREATE:
         AddTrayIcon(hWnd);
         break;
+
     case WM_DESTROY:
         RemoveTrayIcon(hWnd);
         PostQuitMessage(0);
         break;
+
     default:
-        return DefWindowProc(hWnd, msg, wParam, lParam);
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
     return 0;
 }
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    // Single-instance check
-    HANDLE hMutex = CreateMutex(NULL, FALSE, L"Global\\UnofficialOracleServerLauncher23AI");
+int WINAPI wWinMain(
+    _In_     HINSTANCE hInstance,
+    _In_opt_ HINSTANCE hPrevInstance,
+    _In_     PWSTR    lpCmdLine,
+    _In_     int      nCmdShow
+) {
+    // single-instance
+    HANDLE mtx = CreateMutexW(NULL, FALSE,
+        L"Global\\UnofficialOracleServerLauncher23AI");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBox(NULL, L"It's already running. Check the system tray.", L"Info", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(NULL,
+            L"It's already running. Check the system tray.",
+            L"Info", MB_OK | MB_ICONINFORMATION);
         return 0;
     }
 
-    // Construct server path dynamically
+    // dynamic server path
     wchar_t user[MAX_PATH];
-    DWORD len = GetEnvironmentVariable(L"USERNAME", user, MAX_PATH);
-    SERVER_PATH = std::wstring(L"C:\\app\\") + std::wstring(user, len) + L"\\product\\23ai\\dbhomeFree";
+    DWORD len = GetEnvironmentVariableW(
+        L"USERNAME", user, MAX_PATH);
+    SERVER_PATH = L"C:\\app\\"
+        + std::wstring(user, len)
+        + L"\\product\\23ai\\dbhomeFree";
 
-    // License notice
-    if (!NoticeExists()) ShowNotice(hInstance);
+    // show license once
+    if (!NoticeExists())
+        ShowNotice(hInstance);
 
-    // Start services
-    for (auto& name : SERVICE_NAMES) StartNamedService(name);
+    // start services on launch
+    for (auto& svc : SERVICE_NAMES)
+        StartNamedService(svc);
 
-    // Register and create invisible window
-    WNDCLASSEX wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = g_szClassName;
-    RegisterClassEx(&wc);
+    // create hidden tray window
+    WNDCLASSEXW wcx = { sizeof(wcx) };
+    wcx.lpfnWndProc = WndProc;
+    wcx.hInstance = hInstance;
+    wcx.lpszClassName = g_szClassName;
+    RegisterClassExW(&wcx);
 
-    HWND hWnd = CreateWindowEx(0, g_szClassName, L"", 0,
-        0, 0, 0, 0, NULL, NULL, hInstance, NULL);
+    HWND hWnd = CreateWindowExW(
+        0, g_szClassName, L"", 0, 0, 0, 0, 0,
+        NULL, NULL, hInstance, NULL);
+    ShowWindow(hWnd, SW_HIDE);
 
     MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
+    while (GetMessageW(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        DispatchMessageW(&msg);
     }
     return 0;
 }
